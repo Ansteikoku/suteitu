@@ -1,0 +1,174 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>６ちゃんねる - 板</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: sans-serif; padding: 10px; background: #f9f9f9; max-width: 900px; margin: auto; }
+    h1, h2 { text-align: center; }
+    .thread { padding: 10px; background: #fff; margin: 10px 0; border: 1px solid #ccc; }
+    input, textarea, button, select { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
+    canvas { border: 1px solid #ccc; display: block; margin-top: 5px; width: 100%; max-width: 400px; }
+    #pagination { text-align: center; margin: 20px 0; }
+    .actions button { margin-right: 10px; }
+    .timestamp { font-size: 0.9em; color: gray; margin-top: 5px; }
+    .modal {
+      display: none; position: fixed; z-index: 1; left: 0; top: 0;
+      width: 100%; height: 100%; overflow: auto;
+      background-color: rgba(0,0,0,0.8);
+    }
+    .modal-content {
+      margin: auto; display: block; width: 80%; max-width: 800px;
+    }
+    #close-modal {
+      position: absolute; top: 20px; right: 35px; color: #fff;
+      font-size: 40px; font-weight: bold; cursor: pointer;
+    }
+    @media (max-width: 600px) {
+      body { padding: 5px; }
+    }
+  </style>
+</head>
+<body>
+  <h1>スレッド一覧</h1>
+  <div id="thread-list">読み込み中...</div>
+  <div id="pagination">
+    <button id="prev-btn">前へ</button>
+    <span id="page-num">1</span>
+    <button id="next-btn">次へ</button>
+  </div>
+
+  <h2>スレッド作成</h2>
+  <form id="thread-form">
+    <input type="text" id="title" placeholder="タイトル" required />
+    <textarea id="body" placeholder="本文" required></textarea>
+    <input type="file" id="image" accept="image/*" />
+    <label>お絵かき:</label><br />
+    <select id="color"><option value="#000000">黒</option><option value="#ff0000">赤</option><option value="#00cc00">緑</option></select>
+    <input type="range" id="lineWidth" min="1" max="10" value="2" />
+    <canvas id="draw-canvas" width="300" height="200"></canvas>
+    <button type="button" onclick="clearCanvas()">クリア</button>
+    <button type="submit">作成</button>
+  </form>
+
+  <!-- モーダル拡大表示 -->
+  <div id="imgModal" class="modal">
+    <span id="close-modal">&times;</span>
+    <img class="modal-content" id="modal-img">
+  </div>
+
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+    const supabase = createClient("https://sefxopbwwkqdyhgoozba.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNlZnhvcGJ3d2txZHloZ29vemJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIxNDE0MzYsImV4cCI6MjA2NzcxNzQzNn0.gYAz5VrU_4kAt8cX-Xsur-GhkegJJgjyd0VaaIoeHfE");
+
+    const canvas = document.getElementById("draw-canvas");
+    const ctx = canvas.getContext("2d");
+    let drawing = false;
+    let page = 1, limit = 10;
+    const colorInput = document.getElementById("color");
+    const lineWidthInput = document.getElementById("lineWidth");
+
+    canvas.addEventListener("mousedown", () => drawing = true);
+    canvas.addEventListener("mouseup", () => drawing = false);
+    canvas.addEventListener("mousemove", (e) => {
+      if (!drawing) return;
+      const rect = canvas.getBoundingClientRect();
+      ctx.strokeStyle = colorInput.value;
+      ctx.lineWidth = lineWidthInput.value;
+      ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+      ctx.stroke();
+    });
+
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    window.clearCanvas = clearCanvas;
+
+    async function loadThreads() {
+      const from = (page - 1) * limit;
+      const to = from + limit - 1;
+      const { data } = await supabase
+        .from("threads")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .range(from, to);
+      const list = document.getElementById("thread-list");
+      list.innerHTML = "";
+      data.forEach(t => {
+        const div = document.createElement("div");
+        div.className = "thread";
+        const createdAt = new Date(t.created_at).toLocaleString("ja-JP");
+        div.innerHTML = \`
+          <a href="thread.html?id=\${t.id}">\${t.title}</a><br>\${t.body}<br>
+          \${t.image_url ? '<img class="clickable-img" src="' + t.image_url + '" style="max-width:100%;">' : ""}
+          \${t.draw_url ? '<img class="clickable-img" src="' + t.draw_url + '" style="max-width:100%;">' : ""}
+          <div class="timestamp">投稿時間: \${createdAt}</div>
+          <div class="actions">
+            <button onclick="likeThread('\${t.id}')">👍 \${t.like_count ?? 0}</button>
+            <button onclick="reportThread('\${t.id}')">🚨 \${t.report_count ?? 0}</button>
+          </div>
+        \`;
+        list.appendChild(div);
+      });
+      document.getElementById("page-num").textContent = page;
+    }
+
+    document.getElementById("prev-btn").onclick = () => { if (page > 1) { page--; loadThreads(); } };
+    document.getElementById("next-btn").onclick = () => { page++; loadThreads(); };
+
+    async function likeThread(id) {
+      await supabase.rpc("increment_field", { table_name: "threads", id_value: id, field_name: "like_count" });
+      loadThreads();
+    }
+    async function reportThread(id) {
+      await supabase.rpc("increment_field", { table_name: "threads", id_value: id, field_name: "report_count" });
+      loadThreads();
+    }
+
+    document.getElementById("thread-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const title = document.getElementById("title").value;
+      const body = document.getElementById("body").value;
+      const imageFile = document.getElementById("image").files[0];
+      let imageUrl = null;
+
+      if (imageFile) {
+        const fileName = Date.now() + "_" + imageFile.name;
+        const { error: uploadError } = await supabase.storage.from("post-images").upload(fileName, imageFile);
+        if (!uploadError) {
+          const { data: urlData } = supabase.storage.from("post-images").getPublicUrl(fileName);
+          imageUrl = urlData.publicUrl;
+        }
+      }
+
+      const drawDataUrl = canvas.toDataURL("image/png");
+      const { error } = await supabase.from("threads").insert({
+        title, body, image_url: imageUrl, draw_url: drawDataUrl
+      });
+      if (!error) {
+        alert("スレッド作成完了");
+        e.target.reset();
+        clearCanvas();
+        loadThreads();
+      }
+    });
+
+    // モーダル拡大
+    const modal = document.getElementById("imgModal");
+    const modalImg = document.getElementById("modal-img");
+    const closeModal = document.getElementById("close-modal");
+    document.body.addEventListener("click", (e) => {
+      if (e.target.classList.contains("clickable-img")) {
+        modal.style.display = "block";
+        modalImg.src = e.target.src;
+      }
+    });
+    closeModal.onclick = () => modal.style.display = "none";
+    window.onclick = (e) => { if (e.target === modal) modal.style.display = "none"; };
+
+    loadThreads();
+  </script>
+</body>
+</html>

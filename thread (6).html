@@ -1,0 +1,181 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>スレッド詳細</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: sans-serif; padding: 10px; background: #f4f4f4; max-width: 800px; margin: auto; }
+    .comment { background: #fff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; }
+    .actions button { margin-right: 8px; }
+    textarea, input, button, select { width: 100%; margin: 5px 0; padding: 8px; }
+    canvas { border: 1px solid #ccc; display: block; margin-top: 5px; width: 100%; max-width: 400px; }
+    .timestamp { font-size: 0.85em; color: gray; }
+    .modal {
+      display: none; position: fixed; z-index: 2; left: 0; top: 0;
+      width: 100%; height: 100%; overflow: auto;
+      background-color: rgba(0,0,0,0.8);
+    }
+    .modal-content {
+      margin: auto; display: block; width: 80%; max-width: 700px;
+    }
+    #close-modal {
+      position: absolute; top: 20px; right: 30px; color: white;
+      font-size: 40px; font-weight: bold; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="title">読み込み中...</h1>
+  <div id="body"></div>
+  <img id="image" style="max-width:100%;" />
+  <img id="draw" style="max-width:100%;" />
+
+  <h2>コメント</h2>
+  <div id="comments">読み込み中...</div>
+
+  <form id="comment-form">
+    <input type="text" id="name" placeholder="名前（任意）" />
+    <textarea id="comment-body" required placeholder="コメント本文"></textarea>
+    <input type="file" id="comment-image" accept="image/*" />
+    <label>お絵かき:</label>
+    <select id="color"><option value="#000000">黒</option><option value="#ff0000">赤</option><option value="#00cc00">緑</option></select>
+    <input type="range" id="lineWidth" min="1" max="10" value="2" />
+    <canvas id="comment-canvas" width="300" height="200"></canvas>
+    <button type="button" onclick="undo()">戻す</button>
+    <button type="button" onclick="clearCanvas()">クリア</button>
+    <button type="submit">送信</button>
+  </form>
+
+  <div id="imgModal" class="modal">
+    <span id="close-modal">&times;</span>
+    <img class="modal-content" id="modal-img">
+  </div>
+
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+    const supabase = createClient("https://sefxopbwwkqdyhgoozba.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNlZnhvcGJ3d2txZHloZ29vemJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIxNDE0MzYsImV4cCI6MjA2NzcxNzQzNn0.gYAz5VrU_4kAt8cX-Xsur-GhkegJJgjyd0VaaIoeHfE");
+
+    const threadId = new URLSearchParams(location.search).get("id");
+    const canvas = document.getElementById("comment-canvas");
+    const ctx = canvas.getContext("2d");
+    const colorInput = document.getElementById("color");
+    const lineWidthInput = document.getElementById("lineWidth");
+    let drawing = false, history = [], commentCounter = 1;
+
+    canvas.addEventListener("mousedown", () => {
+      drawing = true;
+      history.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    });
+    canvas.addEventListener("mouseup", () => drawing = false);
+    canvas.addEventListener("mousemove", (e) => {
+      if (!drawing) return;
+      const rect = canvas.getBoundingClientRect();
+      ctx.strokeStyle = colorInput.value;
+      ctx.lineWidth = lineWidthInput.value;
+      ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+      ctx.stroke();
+    });
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      history = [];
+    }
+    function undo() {
+      if (history.length > 0) ctx.putImageData(history.pop(), 0, 0);
+    }
+    window.clearCanvas = clearCanvas;
+    window.undo = undo;
+
+    async function loadThread() {
+      const { data } = await supabase.from("threads").select("*").eq("id", threadId).single();
+      if (data) {
+        document.getElementById("title").textContent = data.title;
+        document.getElementById("body").textContent = data.body;
+        if (data.image_url) document.getElementById("image").src = data.image_url;
+        if (data.draw_url) document.getElementById("draw").src = data.draw_url;
+      }
+    }
+
+    function appendComment(c) {
+      const container = document.getElementById("comments");
+      const div = document.createElement("div");
+      div.className = "comment";
+      const timestamp = new Date(c.created_at).toLocaleString("ja-JP");
+      div.innerHTML = `
+        <div class="timestamp">#${commentCounter++}（${timestamp}）</div>
+        <strong>${c.name || "名無しさん"}</strong><br>${c.body}
+        ${c.image_url ? `<br><img src="${c.image_url}" class="clickable-img" style="max-width:100%;">` : ""}
+        ${c.draw_url ? `<br><img src="${c.draw_url}" class="clickable-img" style="max-width:100%;">` : ""}
+        <div class="actions">
+          <button onclick="likeComment('${c.id}')">👍 ${c.like_count ?? 0}</button>
+          <button onclick="reportComment('${c.id}')">🚨 ${c.report_count ?? 0}</button>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
+    async function loadComments() {
+      commentCounter = 1;
+      const { data } = await supabase.from("comments").select("*").eq("thread_id", threadId).order("created_at");
+      const container = document.getElementById("comments");
+      container.innerHTML = "";
+      data.forEach(appendComment);
+    }
+
+    async function likeComment(id) {
+      await supabase.rpc("increment_field", { table_name: "comments", id_value: id, field_name: "like_count" });
+    }
+    async function reportComment(id) {
+      await supabase.rpc("increment_field", { table_name: "comments", id_value: id, field_name: "report_count" });
+    }
+
+    document.getElementById("comment-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = document.getElementById("name").value;
+      const body = document.getElementById("comment-body").value;
+      const file = document.getElementById("comment-image").files[0];
+      let imageUrl = null;
+
+      if (file) {
+        const fileName = Date.now() + "_" + file.name;
+        const { error: uploadError } = await supabase.storage.from("post-images").upload(fileName, file);
+        if (!uploadError) {
+          const { data: urlData } = supabase.storage.from("post-images").getPublicUrl(fileName);
+          imageUrl = urlData.publicUrl;
+        }
+      }
+
+      const drawUrl = canvas.toDataURL("image/png");
+      const { error } = await supabase.from("comments").insert({
+        thread_id: threadId, name, body, image_url: imageUrl, draw_url: drawUrl
+      });
+      if (!error) {
+        e.target.reset();
+        clearCanvas();
+      }
+    });
+
+    supabase.channel("realtime comments")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "comments", filter: `thread_id=eq.${threadId}` }, payload => {
+        appendComment(payload.new);
+      })
+      .subscribe();
+
+    // モーダル拡大処理
+    const modal = document.getElementById("imgModal");
+    const modalImg = document.getElementById("modal-img");
+    document.body.addEventListener("click", (e) => {
+      if (e.target.classList.contains("clickable-img")) {
+        modal.style.display = "block";
+        modalImg.src = e.target.src;
+      }
+    });
+    document.getElementById("close-modal").onclick = () => modal.style.display = "none";
+    window.onclick = (e) => { if (e.target === modal) modal.style.display = "none"; };
+
+    loadThread();
+    loadComments();
+  </script>
+</body>
+</html>
